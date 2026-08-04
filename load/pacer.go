@@ -3,6 +3,7 @@ package load
 import (
 	"fmt"
 	"math"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -73,6 +74,72 @@ func (cp *ConstantPacer) Rate(elapsed time.Duration) float64 {
 // hitsPerNs returns the rate in fractional hits per nanosecond.
 func (cp *ConstantPacer) hitsPerNs() float64 {
 	return float64(cp.Freq) / nano
+}
+
+// A PoissonPacer paces hits with exponentially distributed inter-arrival
+// times, producing a Poisson arrival process with the given mean rate. Unlike
+// ConstantPacer, successive gaps between hits are random, not fixed, though
+// the long-run average rate converges to Freq.
+type PoissonPacer struct {
+	Freq uint64 // Mean frequency of hits per second (lambda)
+	Max  uint64 // Optional maximum allowed hits
+
+	mu   sync.Mutex
+	rng  *rand.Rand
+	next time.Duration // scheduled elapsed-time offset of the next unsent hit
+}
+
+// String returns a pretty-printed description of the PoissonPacer's behaviour:
+//
+//	PoissonPacer{Freq: 1} => Poisson{1 hits / 1s mean}
+func (pp *PoissonPacer) String() string {
+	return fmt.Sprintf("Poisson{%d hits / 1s mean}", pp.Freq)
+}
+
+// Pace determines the length of time to sleep until the next hit is sent.
+func (pp *PoissonPacer) Pace(elapsed time.Duration, hits uint64) (time.Duration, bool) {
+	if pp.Max > 0 && hits >= pp.Max {
+		return 0, true
+	}
+
+	if pp.Freq == 0 {
+		return 0, false // Zero value = infinite rate
+	}
+
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	if pp.rng == nil {
+		pp.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+		pp.next = pp.drawIntervalLocked()
+	}
+
+	wait := pp.next - elapsed
+	pp.next += pp.drawIntervalLocked()
+
+	return wait, false
+}
+
+// drawIntervalLocked draws the next exponentially distributed inter-arrival
+// gap, i.e. -ln(U)/Freq seconds for U ~ Uniform(0, 1). Callers must hold pp.mu.
+func (pp *PoissonPacer) drawIntervalLocked() time.Duration {
+	u := pp.rng.Float64()
+	for u == 0 {
+		// exclude 0 since ln(0) is undefined; resample.
+		u = pp.rng.Float64()
+	}
+
+	seconds := -math.Log(u) / float64(pp.Freq)
+
+	return time.Duration(seconds * nano)
+}
+
+// Rate returns a PoissonPacer's instantaneous hit rate (i.e. requests per
+// second) at the given elapsed duration. Since the process is stationary,
+// the return value is independent of the given elapsed duration and is
+// simply the mean rate Freq.
+func (pp *PoissonPacer) Rate(elapsed time.Duration) float64 {
+	return float64(pp.Freq)
 }
 
 // StepPacer paces an attack by starting at a given request rate
