@@ -29,6 +29,7 @@ func main() {
 	nConns := flag.Uint("connections", 1, "number of gRPC connections to use")
 	c := flag.Uint("concurrency", 50, "number of concurrent workers")
 	insecure := flag.Bool("insecure", true, "use an insecure (non-TLS) connection")
+	timeout := flag.Duration("timeout", 30, "Timeout for each request.")
 	flag.Parse()
 
 	if flag.NArg() != 1 {
@@ -60,6 +61,7 @@ func main() {
 		runner.WithRunDuration(*z),
 		runner.WithMetadataFromJSON(*m),
 		runner.WithConnections(*nConns),
+		runner.WithTimeout(*timeout),
 		// Async dispatch is required for genuine Poisson (open-loop) arrivals:
 		// without it, each worker blocks on the previous request's completion
 		// before accepting its next scheduled tick, which distorts the
